@@ -27,8 +27,8 @@ class ChatViewModel: ObservableObject {
 
     // MARK: - Private Properties
     private var llm: LLM?
-    private let modelDownloadUrl = URL(string: "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q5_K_S.gguf")!
-    private let localModelFileName = "gemma-2-2b-it-Q5_K_S.gguf"
+    private let modelDownloadUrl = URL(string: "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf")!
+    private let localModelFileName = "gemma-3-4b-it-Q4_K_M.gguf"
     private var downloadDelegate: DownloadDelegate? // Delegate for download progress
 
     // MARK: - Initialization
