@@ -56,12 +56,22 @@ class ChatViewModel: ObservableObject {
 
             // --- Initialize LLM from local file ---
             print("Initializing LLM from local file...")
-            let systemPrompt = "You are a helpful assistant."
-            // Initialize self.llm directly using try, adding sampling parameters.
+            // Define custom Gemma template based on user-provided tokens
+            let gemmaTemplate = Template(
+                // Assuming no specific system tokens needed based on user input,
+                // but provide empty ones if required by the struct.
+                // system: ("<|im_start|>system>\n", "<|im_end|>\n"), // Uncomment/adjust if needed
+                user: ("<|im_start|>user>\n", ""), // Add newline for formatting?
+                bot: ("<|im_start|>assistant>\n", ""), // Add newline for formatting?
+                stopSequence: "<|im_end|>assistant>", // Crucial stop sequence
+                systemPrompt: "You are a helpful assistant." // Keep system prompt if template uses it
+            )
+
+            // Initialize self.llm directly using try, adding sampling parameters and custom template.
             self.llm = try LLM(
                 from: localModelUrl,
-                template: .chatML(systemPrompt),
-                // Adjust sampling parameters further - very restrictive sampling
+                template: gemmaTemplate, // Use the custom Gemma template
+                // Keep previous sampling parameters
                 topK: 10,           // Very low topK
                 topP: 0.5,          // Very low topP
                 temp: 0.4,          // Keep temperature low
