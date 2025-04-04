@@ -16,8 +16,8 @@
 			</dict>
 		</dict>
 		<!-- If you need broader access (less secure), uncomment below: -->
-		<!-- <key>NSAllowsArbitraryLoads</key> -->
-		<!-- <true/> -->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
 	</dict>
 	<!-- Standard keys usually managed by Xcode -->
 	<key>CFBundleIdentifier</key>
@@ -68,5 +68,19 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- Memory Management Settings -->
+
+	<!-- For iOS -->
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+
+	<!-- For macOS -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

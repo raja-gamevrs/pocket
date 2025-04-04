@@ -1,232 +1,265 @@
-//
-//  ContentView.swift
-//  pocket
-//
-//  Created by avalon-macmini on 4/3/25.
-//
-//  Refactored to work with ObservableObject ViewModel holding LLM instance
-//
-
 import SwiftUI
-import LLM // Import the LLM library
+import LLM
 
-// Use top-level Chat and Role types directly from LLM module
-// typealias Chat = LLM.Chat // Removed incorrect assumption
-// typealias Role = LLM.Role // Removed incorrect assumption
+class Bot: LLM {
+    convenience init?(_ update: @escaping (Double) -> Void) async {
+        let systemPrompt = "You are a helpful assistant that responds directly to instructions and questions without asking clarifying questions. Always provide a direct answer or follow instructions exactly as given. Never ask the user for more information. If a task is unclear, make reasonable assumptions and proceed with a response. Keep your answers concise and to the point."
+        
+        // Create the model with the chatML template
+        let model = HuggingFaceModel("unsloth/gemma-3-4b-it-GGUF", .Q5_K_M, template: .chatML(systemPrompt))
+        
+        // Initialize the bot with the model
+        try? await self.init(from: model) { progress in update(progress) }
+        
+        // Set inference parameters to reduce hallucinations (order matters)
+        self.topK = 64               // More restrictive top-K
+        self.topP = 0.95            // Slightly more restrictive top-P
+        self.temp = 1              // Even lower temperature for more deterministic outputs
+        // Set history limit to keep context manageable 
+        self.historyLimit = 8        // Keep up to 4 back-and-forth exchanges
+        // Override the template to explicitly set the format
+        self.template = Template(
+            system: ("<|im_start|>system\n", "<|im_end|>\n"),
+            user: ("<|im_start|>user\n", "<|im_end|>\n"),
+            bot: ("<|im_start|>assistant\n", "<|im_end|>\n"),
+            stopSequence: "<|im_end|>",
+            systemPrompt: systemPrompt
+        )
+    }
+}
+
+struct ChatMessage: Identifiable, Equatable {
+    let id = UUID()
+    let isUser: Bool
+    let text: String
+    
+    static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
+        lhs.id == rhs.id && lhs.isUser == rhs.isUser && lhs.text == rhs.text
+    }
+}
 
 struct ContentView: View {
-    // Use @StateObject for the ViewModel lifecycle
-    @StateObject private var viewModel = ChatViewModel()
-    // State for user input
-    @State private var userInput: String = ""
-    // State for download progress (only relevant during init)
-    @State private var downloadProgress: Double = 0.0
-
+    @State var bot: Bot? = nil
+    @State var progress: CGFloat = 0
+    @State var messages: [ChatMessage] = []
+    @State var inputText: String = ""
+    @State var isTyping: Bool = false
+    @State var currentResponse: String = ""
+    
+    func updateProgress(_ progress: Double) {
+        self.progress = CGFloat(progress)
+    }
+    
     var body: some View {
-        NavigationView {
-            Group {
-                // Show loading/error view until initialization is complete
-                if !viewModel.initializationComplete {
-                    if let error = viewModel.loadingError {
-                        initializationErrorView(errorDetails: error)
-                    } else {
-                        loadingView
-                    }
-                } else {
-                    // Show chat view once initialized
-                    chatView
-                }
-            }
-            .navigationTitle("Local LLM Chat")
-            .navigationBarTitleDisplayMode(.inline)
-            // Use .task to handle asynchronous initialization
-            .task {
-                await viewModel.initializeLLM { progress in
-                    // Update progress state on main thread
-                    self.downloadProgress = progress
-                }
-            }
-        }
-    }
-
-    // MARK: - Subviews
-
-    // View shown during loading/downloading
-    private var loadingView: some View {
-        VStack(spacing: 15) {
-            ProgressView(value: downloadProgress) {
-                Text("Loading Model...")
-                    .font(.headline)
-            } currentValueLabel: {
-                // Only show percentage if progress > 0, otherwise it's likely not downloading yet
-                if downloadProgress > 0 {
-                    Text(String(format: "%.1f%%", downloadProgress * 100))
-                }
-            }
-            .progressViewStyle(.linear)
-
-            Text("Initializing LLM engine...")
-                 .font(.footnote)
-                 .foregroundColor(.gray)
-            if downloadProgress > 0 && downloadProgress < 1 {
-                 Text("Downloading model if not cached...")
-                     .font(.caption)
-                     .foregroundColor(.gray)
+        VStack {
+            if let bot {
+                chatView(bot)
+            } else {
+                loadingView
             }
         }
         .padding()
     }
-
-    // View shown when viewModel initialization fails
-    private func initializationErrorView(errorDetails: String) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 50, height: 50)
-                .foregroundColor(.orange)
-            Text("Initialization Failed")
+    
+    var loadingView: some View {
+        VStack {
+            Text("Loading Local AI Model...")
                 .font(.headline)
-            Text(errorDetails)
-                .font(.footnote)
-                .foregroundColor(.gray)
-                .multilineTextAlignment(.center)
+                .padding()
+            
+            ProgressView(value: progress) {
+                Text("Downloading model...")
+            } currentValueLabel: {
+                Text(String(format: "%.2f%%", progress * 100))
+            }
+            .padding()
+            .onAppear() {
+                Task {
+                    let bot = await Bot(updateProgress)
+                    await MainActor.run { self.bot = bot }
+                }
+            }
         }
-        .padding()
     }
-
-    // Main Chat View (no longer needs viewModel passed explicitly)
-    private var chatView: some View {
-        VStack { // Main VStack for the chat view
-            // Chat message display area using viewModel.history
-            ScrollViewReader { proxy in // Use ScrollViewReader to scroll to bottom
+    
+    func chatView(_ bot: Bot) -> some View {
+        VStack {
+            Text("Local AI Chat")
+                .font(.headline)
+                .padding()
+            
+            ScrollViewReader { proxy in
                 ScrollView {
-                    // Chat history view content
-                    chatHistoryView
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(messages) { message in
+                            chatBubble(message)
+                        }
+                        
+                        if isTyping {
+                            HStack {
+                                Text(currentResponse)
+                                    .padding(12)
+                                    .background(Color(.systemGray5))
+                                    .foregroundColor(.primary)
+                                    .cornerRadius(18)
+                                
+                                Spacer()
+                            }
+                            .id("typing")
+                        }
+                    }
+                    .padding(.horizontal)
+                    .onChange(of: messages) { _ in
+                        if let lastMessage = messages.last {
+                            withAnimation {
+                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            }
+                        }
+                    }
+                    .onChange(of: isTyping) { _ in
+                        if isTyping {
+                            withAnimation {
+                                proxy.scrollTo("typing", anchor: .bottom)
+                            }
+                        }
+                    }
+                    .onChange(of: currentResponse) { _ in
+                        if isTyping {
+                            withAnimation {
+                                proxy.scrollTo("typing", anchor: .bottom)
+                            }
+                        }
+                    }
                 }
-                // Modifiers applied to the ScrollView
-                .onChange(of: viewModel.history.count) { _ in
-                    // Scroll to the last message in history
-                    scrollToBottom(proxy: proxy, id: viewModel.history.count - 1)
-                }
-                 .onChange(of: viewModel.outputFragment) { _ in
-                     // Scroll while streaming if needed (might be jumpy)
-                     // Only scroll if we are processing and have a fragment
-                     if viewModel.isProcessing && !viewModel.outputFragment.isEmpty {
-                         scrollToBottom(proxy: proxy, id: viewModel.history.count) // Scroll to the streaming placeholder ID
-                     }
-                 }
-            } // End ScrollViewReader
-
-            Spacer() // Pushes the input area to the bottom
-
-            // Input area (Now correctly inside the main VStack)
+            }
+            
             HStack {
-                TextField("Type your message...", text: $userInput)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .padding(.leading)
-                    .disabled(viewModel.isProcessing) // Disable input while processing
-
-                // Use viewModel.isProcessing to determine button state/action
-                if !viewModel.isProcessing { // Show send button if not processing
-                    Button {
-                        send() // Call send function
-                    } label: {
-                        Image(systemName: "paperplane.fill")
-                    }
-                    .padding(.trailing)
-                    .disabled(userInput.isEmpty) // Disable button if input is empty
-                } else {
-                    // Show stop button while processing (isProcessing is true)
-                    Button {
-                        viewModel.stopProcessing() // Call stopProcessing on viewModel
-                    } label: {
-                        Image(systemName: "stop.circle.fill")
-                    }
-                    .padding(.trailing)
-                    .foregroundColor(.red)
-                }
-            }
-            .padding(.bottom)
-
-        } // End main VStack
-    }
-
-    // Helper ViewBuilder for the ScrollView content
-    private var chatHistoryView: some View {
-        VStack(alignment: .leading) {
-            // Iterate over history
-            ForEach(Array(viewModel.history.enumerated()), id: \.offset) { index, chat in
-                chatBubble(chat: chat)
-                    .id(index) // Assign ID for scrolling
-            }
-            // Display the streaming output fragment if processing
-            if viewModel.isProcessing && !viewModel.outputFragment.isEmpty {
-                 streamingOutputBubble(text: viewModel.outputFragment)
-                     .id(viewModel.history.count) // Assign ID for scrolling to streaming bubble
-            }
-        }
-        .padding(.horizontal)
-    }
-
-    // Helper view for a single chat bubble
-    @ViewBuilder
-    private func chatBubble(chat: Chat) -> some View {
-        HStack {
-            if chat.role == .user {
-                Spacer() // Push user messages to the right
-                Text(chat.content)
+                TextField("Ask something...", text: $inputText)
                     .padding(10)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(20)
+                    .disabled(isTyping)
+                
+                Button(action: sendMessage) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .resizable()
+                        .frame(width: 30, height: 30)
+                        .foregroundColor(.blue)
+                }
+                .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isTyping)
+            }
+            .padding()
+        }
+    }
+    
+    func chatBubble(_ message: ChatMessage) -> some View {
+        HStack {
+            if message.isUser {
+                Spacer()
+                
+                Text(message.text)
+                    .padding(12)
                     .background(Color.blue)
                     .foregroundColor(.white)
-                    .cornerRadius(10)
-                    .textSelection(.enabled)
+                    .cornerRadius(18)
             } else {
-                Text(chat.content)
-                    .padding(10)
-                    .background(Color.gray.opacity(0.2))
-                    .cornerRadius(10)
-                    .textSelection(.enabled)
-                Spacer() // Keep AI messages to the left
+                Text(message.text)
+                    .padding(12)
+                    .background(Color(.systemGray5))
+                    .foregroundColor(.primary)
+                    .cornerRadius(18)
+                
+                Spacer()
             }
         }
-        .padding(.vertical, 2)
+        .id(message.id)
     }
-
-     // Helper view for the streaming output bubble
-     @ViewBuilder
-     private func streamingOutputBubble(text: String) -> some View {
-         HStack {
-             Text(text)
-                 .padding(10)
-                 .background(Color.gray.opacity(0.2))
-                 .cornerRadius(10)
-                 .textSelection(.enabled)
-             Spacer() // Keep AI messages to the left
-         }
-         .padding(.vertical, 2)
-     }
-
-
-    // Function to handle sending the message
-    func send() {
-        guard !userInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        viewModel.sendMessage(userInput)
-        userInput = "" // Clear input field immediately
+    
+    // Simple utility to clean template tokens
+    private func removeTemplateTokens(_ text: String) -> String {
+        var cleaned = text
+            .replacingOccurrences(of: "<|im_end|>", with: "")
+            .replacingOccurrences(of: "<|im_start|>", with: "")
+        
+        // Check for partial template tokens at the end of the text
+        let partialEndTokens = ["<|im", "<|", "im_start", "im_"]
+        for token in partialEndTokens {
+            if cleaned.hasSuffix(token) {
+                cleaned = String(cleaned.dropLast(token.count))
+            }
+        }
+        
+        return cleaned
     }
-
-    // Helper function to scroll to the bottom
-    func scrollToBottom(proxy: ScrollViewProxy, id: Int) {
-         guard id >= 0 else { return }
-         // Use DispatchQueue to ensure scrolling happens after the view update
-         DispatchQueue.main.async {
-             withAnimation {
-                 proxy.scrollTo(id, anchor: .bottom)
-             }
-         }
-     }
+    
+    func sendMessage() {
+        guard !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let bot = bot else { return }
+        
+        let userMessage = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        messages.append(ChatMessage(isUser: true, text: userMessage))
+        inputText = ""
+        isTyping = true
+        currentResponse = ""
+        
+        // Track text length to detect runaway generation
+        var textLength = 0
+        let maxAllowedLength = 2000 // Maximum characters to allow
+        var shouldContinueProcessing = true
+        
+        Task {
+            // Use the more advanced respond method for full control over the process
+            await bot.respond(to: userMessage, with: { responseStream in
+                // Handle the streaming response manually
+                for await delta in responseStream {
+                    // Skip processing if we've exceeded our limit
+                    if !shouldContinueProcessing {
+                        continue
+                    }
+                    
+                    // Clean any template tokens from deltas
+                    let cleanDelta = removeTemplateTokens(delta)
+                    if !cleanDelta.isEmpty {
+                        await MainActor.run {
+                            currentResponse += cleanDelta
+                            textLength += cleanDelta.count
+                            
+                            // If text gets too long, set flag to stop processing more content
+                            if textLength > maxAllowedLength {
+                                shouldContinueProcessing = false
+                                
+                                // Add ellipsis to indicate truncation
+                                currentResponse += "..."
+                            }
+                        }
+                    }
+                }
+                
+                // When stream completes, create clean final response
+                var finalCleanResponse = removeTemplateTokens(currentResponse)
+                
+                // Safety check: look for incomplete template markers at the end
+                if let range = finalCleanResponse.range(of: "<|", options: .backwards) {
+                    let distance = finalCleanResponse.distance(from: range.lowerBound, to: finalCleanResponse.endIndex)
+                    if distance < 15 { // If the marker is near the end
+                        finalCleanResponse = String(finalCleanResponse[..<range.lowerBound])
+                    }
+                }
+                
+                // Update on main thread
+                await MainActor.run {
+                    if !finalCleanResponse.isEmpty {
+                        messages.append(ChatMessage(isUser: false, text: finalCleanResponse))
+                    }
+                    isTyping = false
+                }
+                
+                return finalCleanResponse
+            })
+        }
+    }
 }
 
 #Preview {
     ContentView()
-}
+} 
